@@ -118,7 +118,9 @@ function render() {
   const v = viewOf(m);
   const mine = canAct(m);
   // 상대들
-  $('opps').innerHTML = m.players.map((p, i) => (i === m.you ? '' : `<div class="opp${m.turn === i && m.state === 'playing' ? ' turn' : ''}${p.alive ? '' : ' out'}"><span class="nm">${esc(p.name)}</span>${p.online || p.gone ? '' : '<span class="off">끊김</span>'}<span class="ct">🂠 ${p.alive ? p.count : 0}<small>장</small></span></div>`)).join('');
+  const ev = m.event && m.event.who !== m.you && m.event.kind !== 'out' ? m.event : null;      // 상대가 방금 한 행동을 그 자리에 붙인다
+  const evText = (e) => (e.kind === 'play' ? `▶ ${L.nameOf(e.card)}` : `🃏 +${e.n}`);
+  $('opps').innerHTML = m.players.map((p, i) => (i === m.you ? '' : `<div class="opp${m.turn === i && m.state === 'playing' ? ' turn' : ''}${p.alive ? '' : ' out'}${ev && ev.who === i ? ' acted' : ''}"><span class="nm">${esc(p.name)}</span>${ev && ev.who === i ? `<span class="lastact">${esc(evText(ev))}</span>` : ''}${p.online || p.gone ? '' : '<span class="off">끊김</span>'}<span class="ct">🂠 ${p.alive ? p.count : 0}<small>장</small></span></div>`)).join('');
   // 가운데
   $('topCard').innerHTML = '';
   if (m.top >= 0) $('topCard').appendChild(cardEl(m.top, 'big'));
