@@ -336,5 +336,34 @@ test('hard ai beats easy ai most of the time in two player games', () => {
     }
     if (st.winner === 0) hard++;
   }
-  assert.ok(hard / games > 0.55, 'hard won ' + hard + ' of ' + games);
+  assert.ok(hard / games > 0.6, 'hard won ' + hard + ' of ' + games);
+});
+
+test('dumpChain counts how many J, Q, K can be played in a row (each skips the opponent in a two player game)', () => {
+  assert.strictEqual(L.dumpChain([C(HE, 11), C(HE, 12), C(HE, 13), C(CL, 5)], C(HE, 4), HE), 3, 'J, Q, K of hearts in a row');
+  assert.strictEqual(L.dumpChain([C(HE, 11), C(HE, 12), C(SP, 13), C(CL, 5)], C(HE, 4), HE), 2, 'the K of spades does not follow a heart Q');
+  assert.strictEqual(L.dumpChain([C(SP, 13), C(CL, 5)], C(HE, 4), HE), 0, 'a K that cannot be played at all');
+  assert.strictEqual(L.dumpChain([C(SP, 11), C(HE, 11), C(SP, 12)], C(HE, 4), HE), 3, 'J of hearts, then J of spades by rank, then Q of spades by suit');
+});
+
+test('the new hard ai beats the old hard ai and easy ai over many seeded games', () => {
+  const play = (a, b, games) => {
+    let w = 0;
+    for (let s = 1; s <= games; s++) {
+      const seat = s % 2;
+      const st = L.newGame({ seed: 7000 + s, players: 2, first: s % 2 });
+      let g = 0;
+      while (st.winner < 0 && g++ < 4000) {
+        const lv = st.turn === seat ? a : b;
+        const act = L.aiPick(st, st.turn, lv);
+        if (act.type === 'draw') L.drawTurn(st, st.turn); else L.play(st, st.turn, act.card, { suit: act.suit, one: act.one });
+      }
+      if (st.winner === seat) w++;
+    }
+    return w / games;
+  };
+  const vsOld = play('hard', 'hard1', 4000);
+  const vsEasy = play('hard', 'easy', 2000);
+  assert.ok(vsOld > 0.52, 'new hard vs old hard ' + vsOld);
+  assert.ok(vsEasy > 0.62, 'new hard vs easy ' + vsEasy);
 });

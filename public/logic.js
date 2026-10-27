@@ -172,14 +172,69 @@ function drawTurn(st, p) {
 
 const countSuit = (hand) => { const c = [0, 0, 0, 0]; for (const x of hand) if (!isJoker(x)) c[suitOf(x)]++; return c; };
 
+// 아직 안 보인 카드(내 손패와 버린 더미 밖) 중에서, top 카드의 공격을 막을 수 있는 카드가 상대 손(n장)에 하나라도 있을 확률
+function defendChance(st, p, top, nOpp) {
+  const seen = new Set(st.hands[p].concat(st.discard));
+  seen.add(top);
+  let unseen = 0, k = 0;
+  for (let c = 0; c < NUM_CARDS; c++) {
+    if (seen.has(c)) continue;
+    unseen++;
+    if (!isAttack(c)) continue;
+    if (isJoker(top) ? isJoker(c) : (isJoker(c) || rankOf(c) === rankOf(top) || suitOf(c) === suitOf(top))) k++;
+  }
+  if (!unseen || nOpp <= 0) return 0;
+  if (k === 0) return 0;
+  // 하나도 없을 확률 = C(unseen-k, n) / C(unseen, n)
+  let none = 1;
+  for (let i = 0; i < Math.min(nOpp, unseen); i++) none *= Math.max(0, (unseen - k - i)) / (unseen - i);
+  return 1 - none;
+}
+
+// 이 카드(모양 suit, 숫자 rank 로 보임)를 낸 뒤 상대(n장)가 낼 카드가 하나도 없을 확률 (안 보인 카드 중 모양·숫자가 맞거나 조커인 것이 없을 확률)
+function stuckChance(st, p, card, suit, nOpp) {
+  const seen = new Set(st.hands[p].concat(st.discard));
+  seen.add(card);
+  const r = isJoker(card) ? -1 : rankOf(card);
+  let unseen = 0, m = 0;
+  for (let c = 0; c < NUM_CARDS; c++) {
+    if (seen.has(c)) continue;
+    unseen++;
+    if (isJoker(c) || (suit >= 0 && suitOf(c) === suit) || (r > 0 && rankOf(c) === r)) m++;
+  }
+  if (!unseen || nOpp <= 0) return 0;
+  let none = 1;
+  for (let i = 0; i < Math.min(nOpp, unseen); i++) none *= Math.max(0, (unseen - m - i)) / (unseen - i);
+  return none;
+}
+
+// 연속으로 낼 수 있는 카드 수 (J·Q·K 는 상대를 건너뛰어 내가 또 두게 된다. 2명일 때). 손패에서 낼 수 있는 가장 긴 줄을 찾는다
+function dumpChain(hand, top, suit, memo = new Map()) {
+  const key = hand.slice().sort((x, y) => x - y).join(',') + '|' + top + '|' + suit;
+  if (memo.has(key)) return memo.get(key);
+  let best = 0;
+  for (const c of hand) {
+    const ok = isJoker(c) || suit === -1 || suitOf(c) === suit || (top < 52 && rankOf(c) === rankOf(top));
+    if (!ok || isAttack(c)) continue;                      // 공격 카드는 줄을 끝낸다(여기서는 따로 센다)
+    const r = rankOf(c);
+    if (r !== 11 && r !== 12 && r !== 13) continue;
+    const rest = hand.filter((x) => x !== c);
+    best = Math.max(best, 1 + dumpChain(rest, c, suitOf(c), memo));
+  }
+  memo.set(key, best);
+  return best;
+}
+
 // 컴퓨터가 고르기. { type:'play', card, suit, one } 또는 { type:'draw' } (할 수 없으면 null)
-// level: 'easy' 는 낼 수 있는 카드를 아무거나(원카드도 가끔 깜빡), 'hard' 는 공격·건너뛰기를 때에 맞춰 쓰고 조커·7 은 아껴 둔다
+// level: 'easy' 는 낼 수 있는 카드를 아무거나(원카드도 가끔 깜빡), 'hard' 는 연속으로 낼 줄을 계산해 카드를 빨리 비우고 공격·조커·7 은 때에 맞춰 쓴다,
+//        'hard1' 은 예전 어려움(시험에서 비교하려고 남겨 둠)
+const STUCK_W = 8;                                        // 상대를 막히게 만드는 값(한 장 뽑게 하는 것의 가치)
 function aiPick(st, p, level, rand = st.rand) {
   if (st.winner >= 0 || p !== st.turn || !st.alive[p]) return null;
   const legal = legalPlays(st, p);
   if (!legal.length) return { type: 'draw' };
   const hand = st.hands[p];
-  if (level !== 'hard') {
+  if (level !== 'hard' && level !== 'hard1') {
     const card = legal[Math.floor(rand() * legal.length)];
     const cnt = countSuit(hand.filter((c) => c !== card));
     return { type: 'play', card, suit: cnt.indexOf(Math.max(...cnt)), one: rand() > 0.25 };
@@ -187,6 +242,7 @@ function aiPick(st, p, level, rand = st.rand) {
   const nextP = stepFrom(st, p, 1);
   const nextLow = st.hands[nextP].length <= 3;
   const defending = st.stack > 0;
+  const cnt = countSuit(hand);
   let best = null, bs = -Infinity;
   for (const card of legal) {
     let s = rand() * 0.5;
@@ -199,15 +255,46 @@ function aiPick(st, p, level, rand = st.rand) {
     if (r === 11 || r === 12 || r === 13) s += nextLow ? 4 : 1;
     if (r === 7) s -= hand.length > 4 ? 1.5 : 0;
     // 손에 많은 모양의 카드를 먼저 내서 다음에 낼 길을 넓힌다
-    const cnt = countSuit(hand);
     if (!isJoker(card)) s += cnt[suitOf(card)] * 0.3;
     if (hand.length <= 2) s += 3;                        // 마무리
+    if (level === 'hard') {
+      // 공격: 상대가 막을 수 있을 확률(안 보인 공격 카드가 상대 손에 있을 확률)을 보고 쓴다. 못 막으면 쌓인 장수만큼 뽑게 하고, 막히면 더 커져서 돌아온다
+      if (isAttack(card) && !defending) {
+        const pD = defendChance(st, p, card, st.hands[nextP].length);
+        const total = st.stack + attackOf(card);
+        s += total * ((1 - pD) * 0.9 - pD * 0.55) - (nextLow ? 0 : 2);   // 위의 기본 가산(+2/+6)을 확률에 맞춰 고친다
+      }
+      // 낸 뒤 상대가 낼 카드가 없을 확률이 높을수록 좋다 (상대가 한 장 뽑게 만든다). 7 은 상대가 가장 없을 만한 모양으로 고른다
+      if (!isAttack(card) && !(r === 11 || r === 12 || r === 13)) {
+        let sc = isJoker(card) ? -1 : suitOf(card);
+        if (r === 7) {
+          let bestV = -Infinity;
+          const restH = hand.filter((c) => c !== card), c2 = countSuit(restH);
+          for (let su = 0; su < 4; su++) { const v = stuckChance(st, p, card, su, st.hands[nextP].length) * STUCK_W + c2[su] * 0.4; if (v > bestV) { bestV = v; sc = su; } }
+        }
+        s += stuckChance(st, p, card, sc, st.hands[nextP].length) * STUCK_W;
+      }
+      // 연속으로 낼 수 있는 줄이 길수록 좋다: 이 카드를 내고 J·Q·K 로 이어서 몇 장을 더 털 수 있는가
+      const rest = hand.filter((c) => c !== card);
+      const suitAfter = isJoker(card) ? -1 : r === 7 ? (() => { const c2 = countSuit(rest); return c2.indexOf(Math.max(...c2)); })() : suitOf(card);
+      const skipper = r === 11 || r === 12 || r === 13;
+      const chain = skipper ? 1 + dumpChain(rest, card, suitAfter) : 0;
+      s += chain * 2.2;
+      if (chain >= rest.length + 1) s += 50;             // 이 줄로 손패를 다 비운다
+      // 한 장만 남기는 수는 상대가 막기 어렵게(공격으로 마무리)하면 더 좋다
+      if (rest.length === 1 && isAttack(rest[0])) s += 2;
+    }
     if (s > bs) { bs = s; best = card; }
   }
   const rest = countSuit(hand.filter((c) => c !== best));
-  return { type: 'play', card: best, suit: rest.indexOf(Math.max(...rest)), one: true };
+  let suitPick = rest.indexOf(Math.max(...rest));
+  if (level === 'hard' && rankOf(best) === 7 && !isJoker(best)) {
+    let bestV = -Infinity;
+    for (let su = 0; su < 4; su++) { const v = stuckChance(st, p, best, su, st.hands[nextP].length) * STUCK_W + rest[su] * 0.4; if (v > bestV) { bestV = v; suitPick = su; } }
+  }
+  return { type: 'play', card: best, suit: suitPick, one: true };
 }
 
-return { SUITS, NUM_CARDS, LIMIT, suitOf, rankOf, isJoker, isRed, attackOf, isAttack, nameOf, rng, newGame, aliveCount, stepFrom, canPlay, legalPlays, play, drawTurn, eliminate, aiPick };
+return { SUITS, NUM_CARDS, LIMIT, dumpChain, suitOf, rankOf, isJoker, isRed, attackOf, isAttack, nameOf, rng, newGame, aliveCount, stepFrom, canPlay, legalPlays, play, drawTurn, eliminate, aiPick };
 })();
 if (typeof module !== 'undefined') module.exports = LOGIC_ONECARD;
